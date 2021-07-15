@@ -19,7 +19,7 @@ RUN sed -i 's:<module>distribution</module>::g' /mvn/pom.xml
 RUN sed -i 's:<module>tools</module>::g' /mvn/pom.xml
 
 RUN mkdir -p /mvn/opengrok-indexer/target/jflex-sources
-RUN mkdir -p /mvn/opengrok-web/src/main/webapp
+RUN mkdir -p /mvn/opengrok-web/src/main/webapp/js
 RUN mkdir -p /mvn/opengrok-web/src/main/webapp/WEB-INF/ && touch /mvn/opengrok-web/src/main/webapp/WEB-INF/web.xml
 
 # dummy build to cache the dependencies
@@ -32,7 +32,7 @@ WORKDIR /opengrok-source
 RUN mvn -DskipTests=true -Dmaven.javadoc.skip=true -B -V package
 RUN cp `ls -t distribution/target/*.tar.gz | head -1` /opengrok.tar.gz
 
-FROM tomcat:9-jdk11
+FROM tomcat:10-jdk11
 LABEL maintainer="https://github.com/oracle/opengrok"
 
 # install dependencies and Python tools
@@ -55,6 +55,9 @@ RUN mkdir -p /opengrok /opengrok/etc /opengrok/data /opengrok/src && \
 
 RUN python3 -m pip install /opengrok/tools/opengrok-tools*
 
+# for /reindex REST endpoint handled by start.py
+RUN python3 -m pip install Flask Flask-HTTPAuth waitress
+
 # environment variables
 ENV SRC_ROOT /opengrok/src
 ENV DATA_ROOT /opengrok/data
@@ -76,4 +79,4 @@ RUN chmod -R +x /scripts
 # run
 WORKDIR $CATALINA_HOME
 EXPOSE 8080
-CMD ["/scripts/start.sh"]
+CMD ["/scripts/start.py"]

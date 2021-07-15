@@ -18,21 +18,39 @@
  */
 
 /*
- * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021, Oracle and/or its affiliates. All rights reserved.
  */
 package org.opengrok.indexer.index;
 
-import javax.ws.rs.ProcessingException;
-import javax.ws.rs.WebApplicationException;
-import javax.ws.rs.client.ClientBuilder;
-import javax.ws.rs.client.Entity;
-import javax.ws.rs.client.Invocation;
-import javax.ws.rs.client.ResponseProcessingException;
-import javax.ws.rs.core.Response;
+import org.opengrok.indexer.configuration.RuntimeEnvironment;
 
-class IndexerUtil {
+import jakarta.ws.rs.ProcessingException;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.client.ClientBuilder;
+import jakarta.ws.rs.client.Entity;
+import jakarta.ws.rs.client.Invocation;
+import jakarta.ws.rs.client.ResponseProcessingException;
+import jakarta.ws.rs.core.HttpHeaders;
+import jakarta.ws.rs.core.MultivaluedHashMap;
+import jakarta.ws.rs.core.MultivaluedMap;
+import jakarta.ws.rs.core.Response;
+
+public class IndexerUtil {
 
     private IndexerUtil() {
+    }
+
+    /**
+     * @return map of HTTP headers to use when making API requests to the web application
+     */
+    public static MultivaluedMap<String, Object> getWebAppHeaders() {
+        MultivaluedMap<String, Object> headers = new MultivaluedHashMap<>();
+        String token = null;
+        if ((token = RuntimeEnvironment.getInstance().getIndexerAuthenticationToken()) != null) {
+            headers.add(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+        }
+
+        return headers;
     }
 
     /**
@@ -56,9 +74,10 @@ class IndexerUtil {
                                                         .path("v1")
                                                         .path("configuration")
                                                         .path("projectsEnabled")
-                                                        .request();
+                                                        .request()
+                                                        .headers(getWebAppHeaders());
         final String enabled = request.get(String.class);
-        if (enabled == null || !Boolean.valueOf(enabled)) {
+        if (!Boolean.parseBoolean(enabled)) {
             final Response r = request.put(Entity.text(Boolean.TRUE.toString()));
             if (r.getStatusInfo().getFamily() != Response.Status.Family.SUCCESSFUL) {
                 throw new WebApplicationException(String.format("Unable to enable projects: %s", r.getStatusInfo().getReasonPhrase()), r.getStatus());

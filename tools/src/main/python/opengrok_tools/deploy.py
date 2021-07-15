@@ -18,12 +18,13 @@
 # CDDL HEADER END
 
 #
-# Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2008, 2021, Oracle and/or its affiliates. All rights reserved.
 # Portions Copyright (c) 2017-2018, Chris Fraire <cfraire@me.com>.
 #
 
 import argparse
 import os
+import sys
 import tempfile
 from shutil import copyfile
 from zipfile import ZipFile
@@ -139,19 +140,19 @@ def main():
     try:
         args = parser.parse_args()
     except ValueError as e:
-        fatal(e)
+        return fatal(e, exit=False)
 
     logger = get_console_logger(get_class_basename(), args.loglevel)
 
     if args.insert and not os.path.isfile(args.insert):
-        fatal("File '{}' does not exist".format(args.insert))
+        return fatal("File '{}' does not exist".format(args.insert), exit=False)
 
     try:
         deploy_war(logger, args.source_war[0], args.target_war[0], args.config,
                    args.insert)
     except XMLProcessingException as e:
-        fatal(e)
+        return fatal(e, exit=False)
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

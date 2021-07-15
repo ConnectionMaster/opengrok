@@ -213,7 +213,7 @@ document.domReady.push(function() {domReadyHistory();});
         <tr>
             <th>Revision <%
             if (hist.hasTags()) {
-                %><a href="#" onclick="javascript: toggle_revtags(); return false;">
+                %><a href="#" onclick="toggle_revtags(); return false;">
                     <span class="revtags-hidden">
                     (&lt;&lt;&lt; Hide revision tags)</span>
                     <span class="revtags">
@@ -238,7 +238,7 @@ document.domReady.push(function() {domReadyHistory();});
             <th>Author</th>
             <th>Comments <%
             if (hist.hasFileList()) {
-                %><a href="#" onclick="javascript: toggle_filelist(); return false;">
+                %><a href="#" onclick="toggle_filelist(); return false;">
                     <div class="filelist-hidden">
                     (&lt;&lt;&lt; Hide modified files)</div>
                     <div class="filelist">
@@ -256,7 +256,7 @@ document.domReady.push(function() {domReadyHistory();});
                 if (rev == null || rev.length() == 0) {
                     rev = "";
                 }
-                String tags = entry.getTags();
+                String tags = hist.getTags().get(rev);
 
                 if (tags != null) {
 			int colspan;
@@ -291,6 +291,7 @@ document.domReady.push(function() {domReadyHistory();});
                 </a></td>
             <td><%
                 %><input type="radio"
+                        aria-label="From"
                         data-revision-1="<%= (start + count) %>"
                         data-revision-2="<%= revision2 %>"
                         data-diff-revision="<%= QueryParameters.REVISION_1_PARAM %>"
@@ -308,6 +309,7 @@ document.domReady.push(function() {domReadyHistory();});
                 %>/><%
 
                 %><input type="radio"
+                        aria-label="To"
                         data-revision-1="<%= revision1 %>"
                         data-revision-2="<%= (start + count) %>"
                         data-diff-revision="<%= QueryParameters.REVISION_2_PARAM %>"

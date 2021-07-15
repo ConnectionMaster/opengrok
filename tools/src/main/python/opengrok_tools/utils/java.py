@@ -18,14 +18,16 @@
 # CDDL HEADER END
 
 #
-# Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2008, 2021, Oracle and/or its affiliates. All rights reserved.
 # Portions Copyright (c) 2017-2018, Chris Fraire <cfraire@me.com>.
 #
 
+import os
 import platform
+import shutil
+
 from .command import Command
 from .utils import is_exe
-import os
 
 
 class Java(Command):
@@ -88,7 +90,7 @@ class Java(Command):
             if os.path.isdir(java_home):
                 java = os.path.join(java_home, 'bin', 'java')
         elif system_name == 'Darwin':
-            cmd = Command('/usr/libexec/java_home')
+            cmd = Command(['/usr/libexec/java_home'])
             cmd.execute()
             java = os.path.join(cmd.getoutputstr(), 'bin', 'java')
         elif system_name == 'Linux':
@@ -104,5 +106,10 @@ class Java(Command):
                              "means, trying JAVA_HOME: {}".format(java_home))
                 if os.path.isdir(java_home):
                     java = os.path.join(java_home, 'bin', 'java')
+
+        if not java:
+            logger.debug("Could not detemine java executable using standard "
+                         "means, trying system path")
+            java = shutil.which('java')
 
         return java

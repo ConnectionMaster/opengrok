@@ -18,7 +18,7 @@
  */
 
 /*
- * Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2021, Oracle and/or its affiliates. All rights reserved.
  * Portions Copyright (c) 2018, 2019, Chris Fraire <cfraire@me.com>.
  */
 package org.opengrok.indexer.search;
@@ -26,11 +26,10 @@ package org.opengrok.indexer.search;
 import java.io.File;
 import java.util.Collections;
 import java.util.TreeSet;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.opengrok.indexer.configuration.RuntimeEnvironment;
 import org.opengrok.indexer.history.HistoryGuru;
 import org.opengrok.indexer.index.Indexer;
@@ -38,10 +37,10 @@ import org.opengrok.indexer.util.TestRepository;
 
 import org.opengrok.indexer.history.RepositoryFactory;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Do basic testing of the SearchEngine.
@@ -53,7 +52,7 @@ public class SearchEngineTest {
     static TestRepository repository;
     static File configFile;
 
-    @BeforeClass
+    @BeforeAll
     public static void setUpClass() throws Exception {
         repository = new TestRepository();
         repository.create(HistoryGuru.class.getResourceAsStream("repositories.zip"));
@@ -77,18 +76,10 @@ public class SearchEngineTest {
         RuntimeEnvironment.getInstance().readConfiguration(new File(configFile.getAbsolutePath()));
     }
 
-    @AfterClass
+    @AfterAll
     public static void tearDownClass() throws Exception {
         repository.destroy();
         configFile.delete();
-    }
-
-    @Before
-    public void setUp() {
-    }
-
-    @After
-    public void tearDown() {
     }
 
     @Test

@@ -59,7 +59,7 @@ public class IndexerParallelizer implements AutoCloseable {
     private LazilyInstantiate<ObjectPool<Ctags>> lzCtagsPool;
     private LazilyInstantiate<ExecutorService> lzFixedExecutor;
     private LazilyInstantiate<ExecutorService> lzHistoryExecutor;
-    private LazilyInstantiate<ExecutorService> lzHistoryRenamedExecutor;
+    private LazilyInstantiate<ExecutorService> lzHistoryFileExecutor;
     private LazilyInstantiate<ExecutorService> lzCtagsWatcherExecutor;
 
     /**
@@ -82,7 +82,7 @@ public class IndexerParallelizer implements AutoCloseable {
         createLazyCtagsPool();
         createLazyFixedExecutor();
         createLazyHistoryExecutor();
-        createLazyHistoryRenamedExecutor();
+        createLazyHistoryFileExecutor();
         createLazyCtagsWatcherExecutor();
     }
 
@@ -108,17 +108,17 @@ public class IndexerParallelizer implements AutoCloseable {
     }
 
     /**
-     * @return the ExecutorService used for history parallelism
+     * @return the ExecutorService used for history parallelism (repository level)
      */
     public ExecutorService getHistoryExecutor() {
         return lzHistoryExecutor.get();
     }
 
     /**
-     * @return the ExecutorService used for history-renamed parallelism
+     * @return the ExecutorService used for history parallelism (file level)
      */
-    public ExecutorService getHistoryRenamedExecutor() {
-        return lzHistoryRenamedExecutor.get();
+    public ExecutorService getHistoryFileExecutor() {
+        return lzHistoryFileExecutor.get();
     }
 
     /**
@@ -195,9 +195,9 @@ public class IndexerParallelizer implements AutoCloseable {
     }
 
     private void bounceHistoryRenamedExecutor() {
-        if (lzHistoryRenamedExecutor.isActive()) {
-            ExecutorService formerHistoryRenamedExecutor = lzHistoryRenamedExecutor.get();
-            createLazyHistoryRenamedExecutor();
+        if (lzHistoryFileExecutor.isActive()) {
+            ExecutorService formerHistoryRenamedExecutor = lzHistoryFileExecutor.get();
+            createLazyHistoryFileExecutor();
             formerHistoryRenamedExecutor.shutdown();
         }
     }
@@ -240,9 +240,9 @@ public class IndexerParallelizer implements AutoCloseable {
                 Executors.newFixedThreadPool(env.getHistoryParallelism()));
     }
 
-    private void createLazyHistoryRenamedExecutor() {
-        lzHistoryRenamedExecutor = LazilyInstantiate.using(() ->
-                Executors.newFixedThreadPool(env.getHistoryRenamedParallelism()));
+    private void createLazyHistoryFileExecutor() {
+        lzHistoryFileExecutor = LazilyInstantiate.using(() ->
+                Executors.newFixedThreadPool(env.getHistoryFileParallelism()));
     }
 
     private class CtagsObjectFactory implements ObjectFactory<Ctags> {

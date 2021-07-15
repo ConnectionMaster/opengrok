@@ -18,7 +18,7 @@
  */
 
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2021, Oracle and/or its affiliates. All rights reserved.
  * Portions Copyright (c) 2011, Jens Elkner.
  * Portions Copyright (c) 2017, 2020, Chris Fraire <cfraire@me.com>.
  */
@@ -32,17 +32,18 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.security.InvalidParameterException;
+import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
@@ -55,12 +56,16 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import javax.servlet.ServletRequest;
-import javax.servlet.http.Cookie;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import javax.ws.rs.core.HttpHeaders;
 
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.ws.rs.core.HttpHeaders;
+import org.apache.lucene.document.DateTools;
+import org.apache.lucene.document.Document;
+import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.VisibleForTesting;
 import org.opengrok.indexer.Info;
 import org.opengrok.indexer.analysis.AbstractAnalyzer;
 import org.opengrok.indexer.analysis.AnalyzerGuru;
@@ -72,10 +77,10 @@ import org.opengrok.indexer.configuration.IgnoredNames;
 import org.opengrok.indexer.configuration.Project;
 import org.opengrok.indexer.configuration.RuntimeEnvironment;
 import org.opengrok.indexer.history.Annotation;
-import org.opengrok.indexer.history.History;
 import org.opengrok.indexer.history.HistoryEntry;
 import org.opengrok.indexer.history.HistoryException;
 import org.opengrok.indexer.history.HistoryGuru;
+import org.opengrok.indexer.index.IndexDatabase;
 import org.opengrok.indexer.logger.LoggerFactory;
 import org.opengrok.indexer.search.QueryBuilder;
 import org.opengrok.indexer.util.IOUtils;
@@ -120,8 +125,9 @@ public final class PageConfig {
     // cookie name
     public static final String OPEN_GROK_PROJECT = "OpenGrokProject";
 
+    public static final String DUMMY_REVISION = "unknown";
+
     // query parameters
-    protected static final String ALL_PROJECT_SEARCH = "searchall";
     protected static final String PROJECT_PARAM_NAME = "project";
     protected static final String GROUP_PARAM_NAME = "group";
     private static final String DEBUG_PARAM_NAME = "debug";
@@ -163,7 +169,7 @@ public final class PageConfig {
     private static final String ATTR_NAME = PageConfig.class.getCanonicalName();
     private HttpServletRequest req;
 
-    private ExecutorService executor;
+    private final ExecutorService executor;
 
     /**
      * Sets current request's attribute.
@@ -441,33 +447,11 @@ public final class PageConfig {
             if (isDir() && getResourcePath().length() > 1) {
                 files = getResourceFile().listFiles();
             }
+
             if (files == null) {
                 dirFileList = Collections.emptyList();
             } else {
-                List<String> listOfFiles;
-                if (env.getListDirsFirst()) {
-                    Arrays.sort(files, new Comparator<File>() {
-                            @Override
-                            public int compare(File f1, File f2) {
-                                if (f1.isDirectory() && f2.isDirectory()) {
-                                    return f1.getName().compareTo(f2.getName());
-                                } else if (f1.isFile() && f2.isFile()) {
-                                    return f1.getName().compareTo(f2.getName());
-                                } else {
-                                    if (f1.isFile() && f2.isDirectory()) {
-                                        return 1;
-                                    } else {
-                                        return -1;
-                                    }
-                                }
-                            }
-                        });
-                } else {
-                    Arrays.sort(files,
-                            (File f1, File f2) -> f1.getName().compareTo(f2.getName()));
-                }
-                listOfFiles = Arrays.asList(files).stream().
-                            map(f -> f.getName()).collect(Collectors.toList());
+                List<String> listOfFiles = getSortedFiles(files);
 
                 if (env.hasProjects() && getPath().isEmpty()) {
                     /**
@@ -483,11 +467,8 @@ public final class PageConfig {
                      * projects filtering.
                      */
                     List<String> modifiableListOfFiles = new ArrayList<>(listOfFiles);
-                    modifiableListOfFiles.removeIf((t) -> {
-                        return !getProjectHelper().getAllProjects().stream().anyMatch((p) -> {
-                            return p.getName().equalsIgnoreCase(t);
-                        });
-                    });
+                    modifiableListOfFiles.removeIf(t -> getProjectHelper().getAllProjects().stream()
+                            .noneMatch(p -> p.getName().equalsIgnoreCase(t)));
                     return dirFileList = Collections.unmodifiableList(modifiableListOfFiles);
                 }
 
@@ -495,6 +476,27 @@ public final class PageConfig {
             }
         }
         return dirFileList;
+    }
+
+    private Comparator<File> getFileComparator() {
+        if (getEnv().getListDirsFirst()) {
+            return (f1, f2) -> {
+                if (f1.isDirectory() && !f2.isDirectory()) {
+                    return -1;
+                } else if (!f1.isDirectory() && f2.isDirectory()) {
+                    return 1;
+                } else {
+                    return f1.getName().compareTo(f2.getName());
+                }
+            };
+        } else {
+            return Comparator.comparing(File::getName);
+        }
+    }
+
+    @VisibleForTesting
+    List<String> getSortedFiles(File[] files) {
+        return Arrays.stream(files).sorted(getFileComparator()).map(File::getName).collect(Collectors.toList());
     }
 
     /**
@@ -801,17 +803,7 @@ public final class PageConfig {
      */
     public String getRequestedProjectsAsString() {
         if (requestedProjectsString == null) {
-            Set<String> projects = getRequestedProjects();
-            if (projects.isEmpty()) {
-                requestedProjectsString = "";
-            } else {
-                StringBuilder buf = new StringBuilder();
-                for (String name : projects) {
-                    buf.append(name).append(',');
-                }
-                buf.setLength(buf.length() - 1);
-                requestedProjectsString = buf.toString();
-            }
+            requestedProjectsString = String.join(",", getRequestedProjects());
         }
         return requestedProjectsString;
     }
@@ -843,15 +835,15 @@ public final class PageConfig {
      * </ol>
      *
      * @return a possible empty set of project names but never {@code null}.
-     * @see #ALL_PROJECT_SEARCH
+     * @see QueryParameters#ALL_PROJECT_SEARCH
      * @see #PROJECT_PARAM_NAME
      * @see #GROUP_PARAM_NAME
      * @see #OPEN_GROK_PROJECT
      */
     public SortedSet<String> getRequestedProjects() {
         if (requestedProjects == null) {
-            requestedProjects
-                    = getRequestedProjects(ALL_PROJECT_SEARCH, PROJECT_PARAM_NAME, GROUP_PARAM_NAME, OPEN_GROK_PROJECT);
+            requestedProjects = getRequestedProjects(
+                    QueryParameters.ALL_PROJECT_SEARCH, PROJECT_PARAM_NAME, GROUP_PARAM_NAME, OPEN_GROK_PROJECT);
         }
         return requestedProjects;
     }
@@ -883,12 +875,8 @@ public final class PageConfig {
         if (cookies != null) {
             for (int i = cookies.length - 1; i >= 0; i--) {
                 if (cookies[i].getName().equals(cookieName)) {
-                    try {
-                        String value = URLDecoder.decode(cookies[i].getValue(), "utf-8");
-                        splitByComma(value, res);
-                    } catch (UnsupportedEncodingException ex) {
-                        LOGGER.log(Level.INFO, "decoding cookie failed", ex);
-                    }
+                    String value = URLDecoder.decode(cookies[i].getValue(), StandardCharsets.UTF_8);
+                    splitByComma(value, res);
                 }
             }
         }
@@ -973,7 +961,7 @@ public final class PageConfig {
             if (group != null) {
                 projectNames.addAll(getProjectHelper().getAllGrouped(group)
                                                       .stream()
-                                                      .filter(project -> project.isIndexed())
+                                                      .filter(Project::isIndexed)
                                                       .map(Project::getName)
                                                       .collect(Collectors.toSet()));
             }
@@ -1209,21 +1197,29 @@ public final class PageConfig {
                 : "";
     }
 
-    private File checkFile(File dir, String name, boolean compressed) {
+    private File checkFileInner(File file, File dir, String name) {
+        File f = new File(dir, name);
+        if (f.exists() && f.isFile()) {
+            if (f.lastModified() >= file.lastModified()) {
+                return f;
+            } else {
+                LOGGER.log(Level.WARNING, "file ''{0}'' is newer than ''{1}''", new Object[]{file, f});
+            }
+        }
+
+        return null;
+    }
+
+    private File checkFile(File file, File dir, String name, boolean compressed) {
         File f;
         if (compressed) {
-            f = new File(dir, TandemPath.join(name, ".gz"));
-            if (f.exists() && f.isFile()
-                    && f.lastModified() >= resourceFile.lastModified()) {
+            f = checkFileInner(file, dir, TandemPath.join(name, ".gz"));
+            if (f != null) {
                 return f;
             }
         }
-        f = new File(dir, name);
-        if (f.exists() && f.isFile()
-                && f.lastModified() >= resourceFile.lastModified()) {
-            return f;
-        }
-        return null;
+
+        return checkFileInner(file, dir, name);
     }
 
     private File checkFileResolve(File dir, String name, boolean compressed) {
@@ -1231,20 +1227,8 @@ public final class PageConfig {
         if (!lresourceFile.canRead()) {
             lresourceFile = new File(PATH_SEPARATOR_STRING);
         }
-        File f;
-        if (compressed) {
-            f = new File(dir, TandemPath.join(name, ".gz"));
-            if (f.exists() && f.isFile()
-                    && f.lastModified() >= lresourceFile.lastModified()) {
-                return f;
-            }
-        }
-        f = new File(dir, name);
-        if (f.exists() && f.isFile()
-                && f.lastModified() >= lresourceFile.lastModified()) {
-            return f;
-        }
-        return null;
+
+        return checkFile(lresourceFile, dir, name, compressed);
     }
 
     /**
@@ -1287,42 +1271,78 @@ public final class PageConfig {
      * @return {@code null} if not found, the file otherwise.
      */
     public File findDataFile() {
-        return checkFile(new File(getEnv().getDataRootPath() + Prefix.XREF_P),
+        return checkFile(resourceFile, new File(getEnv().getDataRootPath() + Prefix.XREF_P),
                 getPath(), env.isCompressXref());
     }
 
+    /**
+     * @return last revision string for {@code file} or null
+     */
     public String getLatestRevision() {
         if (!getEnv().isHistoryEnabled()) {
             return null;
         }
 
-        History hist;
+        String lastRev = getLastRevFromIndex();
+        if (lastRev != null) {
+            return lastRev;
+        }
+
+        // fallback
         try {
-            hist = HistoryGuru.getInstance().
-                    getHistory(new File(getEnv().getSourceRootFile(), getPath()), false, true);
-        } catch (HistoryException ex) {
+            return getLastRevFromHistory();
+        } catch (HistoryException e) {
+            LOGGER.log(Level.WARNING, "cannot get latest revision for {0}", getPath());
             return null;
         }
+    }
 
-        if (hist == null) {
-            return null;
+    @Nullable
+    private String getLastRevFromHistory() throws HistoryException {
+        HistoryEntry he = HistoryGuru.getInstance().
+                getLastHistoryEntry(new File(getEnv().getSourceRootFile(), getPath()), true);
+        if (he != null) {
+            return he.getRevision();
         }
 
-        List<HistoryEntry> hlist = hist.getHistoryEntries();
-        if (hlist == null) {
-            return null;
+        return null;
+    }
+
+    /**
+     * Retrieve last revision from the document matching the resource file (if any).
+     * @return last revision or {@code null} if the document cannot be found, is out of sync
+     * w.r.t. last modified time of the file or the last commit ID is not stored in the document.
+     */
+    @Nullable
+    private String getLastRevFromIndex() {
+        Document doc = null;
+        try {
+            doc = IndexDatabase.getDocument(getResourceFile());
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, String.format("cannot get document for %s", path), e);
         }
 
-        if (hlist.size() == 0) {
-            return null;
+        String lastRev = null;
+        if (doc != null) {
+            // There is no point of checking the date if the LASTREV field is not present.
+            lastRev = doc.get(QueryBuilder.LASTREV);
+            if (lastRev != null) {
+                Date docDate;
+                try {
+                    docDate = DateTools.stringToDate(doc.get(QueryBuilder.DATE));
+                } catch (ParseException e) {
+                    LOGGER.log(Level.WARNING, String.format("cannot get date from the document %s", doc), e);
+                    return null;
+                }
+                Date fileDate = new Date(getResourceFile().lastModified());
+                if (docDate.compareTo(fileDate) < 0) {
+                    LOGGER.log(Level.FINER, "document for '{0}' is out of sync", getResourceFile());
+                    return null;
+                }
+            }
         }
 
-        HistoryEntry he = hlist.get(0);
-        if (he == null) {
-            return null;
-        }
-
-        return he.getRevision();
+        return lastRev;
     }
 
     /**
@@ -1529,7 +1549,7 @@ public final class PageConfig {
         sh.start = getSearchStart();
         sh.maxItems = getSearchMaxItems();
         sh.contextPath = req.getContextPath();
-        // jel: this should be IMHO a config param since not only core dependend
+        // jel: this should be IMHO a config param since not only core dependent
         sh.parallel = Runtime.getRuntime().availableProcessors() > 1;
         sh.isCrossRefSearch = getPrefix() == Prefix.SEARCH_R;
         sh.isGuiSearch = sh.isCrossRefSearch || getPrefix() == Prefix.SEARCH_P;

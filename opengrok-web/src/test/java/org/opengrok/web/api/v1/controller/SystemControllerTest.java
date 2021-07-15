@@ -18,11 +18,15 @@
  */
 
 /*
+ * Copyright (c) 2021, Oracle and/or its affiliates. All rights reserved.
  * Portions Copyright (c) 2020, Chris Fraire <cfraire@me.com>.
  */
 package org.opengrok.web.api.v1.controller;
 
-import org.junit.Test;
+import jakarta.ws.rs.client.Entity;
+import jakarta.ws.rs.core.Application;
+import jakarta.ws.rs.core.Response;
+import org.junit.jupiter.api.Test;
 import org.opengrok.indexer.configuration.Configuration;
 import org.opengrok.indexer.configuration.RuntimeEnvironment;
 import org.opengrok.indexer.util.IOUtils;
@@ -30,24 +34,24 @@ import org.opengrok.indexer.web.EftarFileReader;
 import org.opengrok.indexer.web.PathDescription;
 import org.opengrok.web.api.v1.RestApp;
 
-import javax.ws.rs.client.Entity;
-import javax.ws.rs.core.Application;
-import javax.ws.rs.core.Response;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.FileTime;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SystemControllerTest extends OGKJerseyTest {
 
-    private RuntimeEnvironment env = RuntimeEnvironment.getInstance();
+    private final RuntimeEnvironment env = RuntimeEnvironment.getInstance();
 
     @Override
     protected Application configure() {
@@ -126,6 +130,28 @@ public class SystemControllerTest extends OGKJerseyTest {
                 assertEquals(description.getDescription(), er.get(description.getPath()));
             }
         }
+
+        // Cleanup
+        IOUtils.removeRecursive(dataRoot);
+    }
+
+    @Test
+    public void testIndexTime() throws IOException, ParseException {
+        Path dataRoot = Files.createTempDirectory("indexTimetest");
+        env.setDataRoot(dataRoot.toString());
+        Path indexTimeFile = dataRoot.resolve("timestamp");
+        Files.createFile(indexTimeFile);
+        assertTrue(Files.exists(indexTimeFile));
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd_hh:mm:ss+ZZ");
+        Date date = f.parse("2021-02-16_11:18:01+UTC");
+        Files.setLastModifiedTime(indexTimeFile, FileTime.fromMillis(date.getTime()));
+
+        Response r = target("system")
+                .path("indextime")
+                .request().get();
+        String result = r.readEntity(String.class);
+
+        assertEquals("\"2021-02-16T11:18:01.000+00:00\"", result);
 
         // Cleanup
         IOUtils.removeRecursive(dataRoot);

@@ -20,7 +20,7 @@
 #
 
 #
-# Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2019, 2021, Oracle and/or its affiliates. All rights reserved.
 # Portions Copyright (c) 2020, Krystof Tulinger <k.tulinger@seznam.cz>
 #
 
@@ -30,7 +30,7 @@ import tempfile
 
 import pytest
 import requests
-from mockito import verify, patch, spy2, mock, ANY, when
+from mockito import verify, patch, spy2, mock, ANY, when, unstub
 
 import opengrok_tools.mirror
 from conftest import posix_only, system_binary
@@ -39,13 +39,15 @@ from opengrok_tools.scm.git import GitRepository
 from opengrok_tools.scm.repository import RepositoryException
 from opengrok_tools.utils.command import Command
 from opengrok_tools.utils.exitvals import (
-    CONTINUE_EXITVAL, FAILURE_EXITVAL
+    CONTINUE_EXITVAL, FAILURE_EXITVAL, SUCCESS_EXITVAL
 )
 from opengrok_tools.utils.mirror import check_project_configuration, \
     check_configuration, mirror_project, run_command, get_repos_for_project, \
     HOOKS_PROPERTY, PROXY_PROPERTY, IGNORED_REPOS_PROPERTY, \
     PROJECTS_PROPERTY, DISABLED_CMD_PROPERTY, DISABLED_PROPERTY, \
-    CMD_TIMEOUT_PROPERTY, HOOK_TIMEOUT_PROPERTY, DISABLED_REASON_PROPERTY
+    CMD_TIMEOUT_PROPERTY, HOOK_TIMEOUT_PROPERTY, DISABLED_REASON_PROPERTY, \
+    INCOMING_PROPERTY, IGNORE_ERR_PROPERTY, HOOK_PRE_PROPERTY, \
+    HOOKDIR_PROPERTY, HOOK_POST_PROPERTY
 from opengrok_tools.utils.patterns import COMMAND_PROPERTY, PROJECT_SUBST
 
 
@@ -119,11 +121,23 @@ def test_invalid_config_option():
     assert not check_configuration({"nonexistent": True})
 
 
-def test_valid_config():
+def test_valid_config_proxy():
     assert check_configuration({
         PROJECTS_PROPERTY: {"foo": {PROXY_PROPERTY: True}},
         PROXY_PROPERTY: "proxy"
     })
+
+
+def test_valid_config_incoming():
+    assert check_configuration({
+        PROJECTS_PROPERTY: {"foo": {INCOMING_PROPERTY: True}},
+        INCOMING_PROPERTY: "False"
+    })
+
+
+def test_project_config_incoming_valid():
+    assert check_project_configuration({'foo': {INCOMING_PROPERTY: "T"}})
+    assert check_project_configuration({'foo': {INCOMING_PROPERTY: "F"}})
 
 
 def test_empty_project_config():
@@ -135,8 +149,11 @@ def test_disabled_command_api():
     Test that mirror_project() calls call_rest_api() if API
     call is specified in the configuration for disabled project.
     """
+    def mock_call_rest_api(command, b, http_headers=None, timeout=None):
+        return mock(spec=requests.Response)
+
     with patch(opengrok_tools.utils.mirror.call_rest_api,
-               lambda a, b, c: mock(spec=requests.Response)):
+               mock_call_rest_api):
         project_name = "foo"
         config = {
             DISABLED_CMD_PROPERTY: {
@@ -153,7 +170,8 @@ def test_disabled_command_api():
                               None, None) == CONTINUE_EXITVAL
         verify(opengrok_tools.utils.mirror). \
             call_rest_api(config.get(DISABLED_CMD_PROPERTY),
-                          PROJECT_SUBST, project_name)
+                          {PROJECT_SUBST: project_name},
+                          http_headers=None, timeout=None)
 
 
 def test_disabled_command_api_text_append(monkeypatch):
@@ -163,7 +181,7 @@ def test_disabled_command_api_text_append(monkeypatch):
 
     text_to_append = "foo bar"
 
-    def mock_call_rest_api(command, b, c):
+    def mock_call_rest_api(command, b, http_headers=None, timeout=None):
         disabled_command = config.get(DISABLED_CMD_PROPERTY)
         assert disabled_command
         command_args = disabled_command.get(COMMAND_PROPERTY)
@@ -219,6 +237,87 @@ def test_disabled_command_run():
     assert mirror_project(config, project_name, False,
                           None, None) == CONTINUE_EXITVAL
     verify(opengrok_tools.utils.mirror).run_command(ANY, project_name)
+
+
+@pytest.mark.parametrize("per_project", [True, False])
+def test_ignore_errors_sync(monkeypatch, per_project):
+    """
+    Test that ignore errors overrides failed repository sync().
+    """
+
+    mock_repo = mock(spec=GitRepository)
+    when(mock_repo).sync().thenReturn(FAILURE_EXITVAL)
+
+    def mock_get_repos(*args, **kwargs):
+        return [mock_repo]
+
+    project_name = "foo"
+    if per_project:
+        config = {
+            PROJECTS_PROPERTY: {
+                project_name: {IGNORE_ERR_PROPERTY: True}
+            }
+        }
+    else:
+        config = {
+            IGNORE_ERR_PROPERTY: True,
+        }
+
+    with monkeypatch.context() as m:
+        mock_get_repos.called = False
+        m.setattr("opengrok_tools.utils.mirror.get_repos_for_project",
+                  mock_get_repos)
+
+        src_root = "srcroot"
+        assert mirror_project(config, project_name, False,
+                              None, src_root) == SUCCESS_EXITVAL
+
+
+@pytest.mark.parametrize("hook_type", [HOOK_PRE_PROPERTY, HOOK_POST_PROPERTY])
+@pytest.mark.parametrize("per_project", [True, False])
+def test_ignore_errors_hooks(monkeypatch, hook_type, per_project):
+    """
+    Test that ignore errors property overrides failed hook.
+    """
+
+    def mock_get_repos(*args, **kwargs):
+        return [mock(spec=GitRepository)]
+
+    spy2(opengrok_tools.utils.mirror.process_hook)
+    project_name = "foo"
+    hook_dir = "/befelemepeseveze"
+    hook_name = "nonexistent"
+    if per_project:
+        config = {
+            HOOKDIR_PROPERTY: hook_dir,
+            PROJECTS_PROPERTY: {
+                project_name: {IGNORE_ERR_PROPERTY: True,
+                               HOOKS_PROPERTY: {hook_type: hook_name}}
+            }
+        }
+    else:
+        config = {
+            IGNORE_ERR_PROPERTY: True,
+            HOOKDIR_PROPERTY: hook_dir,
+            PROJECTS_PROPERTY: {
+                project_name: {HOOKS_PROPERTY: {hook_type: hook_name}}
+            }
+        }
+
+    with monkeypatch.context() as m:
+        mock_get_repos.called = False
+        m.setattr("opengrok_tools.utils.mirror.get_repos_for_project",
+                  mock_get_repos)
+
+        src_root = "srcroot"
+        assert mirror_project(config, project_name, False,
+                              None, src_root) == SUCCESS_EXITVAL
+        verify(opengrok_tools.utils.mirror).\
+            process_hook(hook_type, os.path.join(hook_dir, hook_name),
+                         src_root, project_name, None, None)
+        # Necessary to disable the process_hook spy otherwise mockito will
+        # complain about recursive invocation.
+        unstub()
 
 
 def test_disabled_command_run_args():
@@ -308,10 +407,10 @@ def test_get_repos_for_project(monkeypatch):
     timeout = 314159
     test_repo = "/" + project_name
 
-    def mock_get_repos(*args):
+    def mock_get_repos(*args, headers=None, timeout=None):
         return [test_repo]
 
-    def mock_get_repo_type(*args):
+    def mock_get_repo_type(*args, headers=None, timeout=None):
         return "Git"
 
     with tempfile.TemporaryDirectory() as source_root:

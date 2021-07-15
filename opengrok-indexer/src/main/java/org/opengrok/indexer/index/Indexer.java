@@ -18,14 +18,17 @@
  */
 
 /*
- * Copyright (c) 2005, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2021, Oracle and/or its affiliates. All rights reserved.
  * Portions Copyright (c) 2011, Jens Elkner.
  * Portions Copyright (c) 2017, 2020, Chris Fraire <cfraire@me.com>.
  */
 package org.opengrok.indexer.index;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
@@ -55,6 +58,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
+import org.apache.commons.lang3.SystemUtils;
 import org.opengrok.indexer.Info;
 import org.opengrok.indexer.Metrics;
 import org.opengrok.indexer.analysis.AnalyzerGuru;
@@ -72,13 +76,12 @@ import org.opengrok.indexer.history.RepositoriesHelp;
 import org.opengrok.indexer.history.Repository;
 import org.opengrok.indexer.history.RepositoryFactory;
 import org.opengrok.indexer.history.RepositoryInfo;
-import org.opengrok.indexer.index.IndexVersion.IndexVersionException;
 import org.opengrok.indexer.logger.LoggerFactory;
 import org.opengrok.indexer.logger.LoggerUtil;
 import org.opengrok.indexer.util.CtagsUtil;
 import org.opengrok.indexer.util.Executor;
+import org.opengrok.indexer.util.HostUtil;
 import org.opengrok.indexer.util.OptionParser;
-import org.opengrok.indexer.util.PlatformUtils;
 import org.opengrok.indexer.util.Statistics;
 
 /**
@@ -112,7 +115,7 @@ public final class Indexer {
 
     private static final Indexer index = new Indexer();
     private static Configuration cfg = null;
-    private static boolean checkIndexVersion = false;
+    private static boolean checkIndex = false;
     private static boolean runIndex = true;
     private static boolean optimizedChanged = false;
     private static boolean addProjects = false;
@@ -159,8 +162,17 @@ public final class Indexer {
 
         boolean createDict = false;
 
+        int CONNECT_TIMEOUT = 1000;  // in milliseconds
+
         try {
             argv = parseOptions(argv);
+
+            if (webappURI != null) {
+                if (!HostUtil.isReachable(webappURI, CONNECT_TIMEOUT)) {
+                    System.err.println(webappURI + " is not reachable.");
+                    System.exit(1);
+                }
+            }
 
             /*
              * Attend to disabledRepositories here in case exitWithHelp() will
@@ -211,15 +223,12 @@ public final class Indexer {
             }
 
             // automatically allow symlinks that are directly in source root
-            String file = cfg.getSourceRoot();
-            if (file != null) {
-                File sourceRootFile = new File(file);
-                File[] projectDirs = sourceRootFile.listFiles();
-                if (projectDirs != null) {
-                    for (File projectDir : projectDirs) {
-                        if (!projectDir.getCanonicalPath().equals(projectDir.getAbsolutePath())) {
-                            allowedSymlinks.add(projectDir.getAbsolutePath());
-                        }
+            File sourceRootFile = new File(cfg.getSourceRoot());
+            File[] projectDirs = sourceRootFile.listFiles();
+            if (projectDirs != null) {
+                for (File projectDir : projectDirs) {
+                    if (!projectDir.getCanonicalPath().equals(projectDir.getAbsolutePath())) {
+                        allowedSymlinks.add(projectDir.getAbsolutePath());
                     }
                 }
             }
@@ -248,29 +257,28 @@ public final class Indexer {
                 }
             }
 
-            // Set updated configuration in RuntimeEnvironment.
-            env.setConfiguration(cfg, subFilesList, CommandTimeoutType.INDEXER);
-
             // Check version of index(es) versus current Lucene version and exit
             // with return code upon failure.
-            if (checkIndexVersion) {
+            if (checkIndex) {
                 if (cfg == null) {
-                    System.err.println("Need configuration to check index version (use -R)");
+                    System.err.println("Need configuration to check index (use -R)");
                     System.exit(1);
                 }
 
-                try {
-                    IndexVersion.check(subFilesList);
-                } catch (IndexVersionException e) {
-                    System.err.printf("Index version check failed: %s\n", e);
+                if (!IndexCheck.check(cfg, subFilesList)) {
+                    System.err.printf("Index check failed%n");
                     System.err.print("You might want to remove " +
                             (subFilesList.size() > 0 ?
                                     "data for projects " + String.join(",", subFilesList) : "all data") +
-                            " under the DATA_ROOT and to reindex\n");
-                    status = 1;
-                    System.exit(status);
+                            " under the data root and reindex\n");
+                    System.exit(1);
                 }
+
+                System.exit(0);
             }
+
+            // Set updated configuration in RuntimeEnvironment.
+            env.setConfiguration(cfg, subFilesList, CommandTimeoutType.INDEXER);
 
             // Let repository types to add items to ignoredNames.
             // This changes env so is called after the setConfiguration()
@@ -335,7 +343,7 @@ public final class Indexer {
                     IndexerUtil.enableProjects(webappURI);
                 } catch (Exception e) {
                     LOGGER.log(Level.SEVERE, String.format("Couldn't notify the webapp on %s.", webappURI), e);
-                    System.err.println(String.format("Couldn't notify the webapp on %s: %s.", webappURI, e.getLocalizedMessage()));
+                    System.err.printf("Couldn't notify the webapp on %s: %s.%n", webappURI, e.getLocalizedMessage());
                 }
             }
 
@@ -434,7 +442,7 @@ public final class Indexer {
                 if (!preHelp) {
                     die(e.getMessage());
                 } else {
-                    System.err.println(String.format("Warning: failed to read -R %s", cfgFile));
+                    System.err.printf("Warning: failed to read -R %s%n", cfgFile);
                 }
             }
         }));
@@ -505,9 +513,8 @@ public final class Indexer {
                 canonicalRoots.add(root);
             });
 
-            parser.on("--checkIndexVersion",
-                    "Check if current Lucene version matches index version.").execute(v ->
-                    checkIndexVersion = true);
+            parser.on("--checkIndex", "Check index, exit with 0 on success,",
+                    "with 1 on failure.").execute(v -> checkIndex = true);
 
             parser.on("-d", "--dataRoot", "=/path/to/data/root",
                 "The directory where OpenGrok stores the generated data.").
@@ -541,8 +548,7 @@ public final class Indexer {
                 String repoType = (String) v;
                 String repoSimpleType = RepositoryFactory.matchRepositoryByName(repoType);
                 if (repoSimpleType == null) {
-                    System.err.println(String.format(
-                            "'--disableRepository %s' does not match a type and is ignored", v));
+                    System.err.printf("'--disableRepository %s' does not match a type and is ignored%n", v);
                 } else {
                     disabledRepositories.add(repoSimpleType);
                 }
@@ -560,15 +566,16 @@ public final class Indexer {
             parser.on("-H", "--history", "Enable history.").execute(v -> cfg.setHistoryEnabled(true));
 
             parser.on("--historyThreads", "=number", Integer.class,
-                    "The number of threads to use for history cache generation. By default the number",
-                    "of threads will be set to the number of available CPUs. Assumes -H/--history.").execute(threadCount ->
+                    "The number of threads to use for history cache generation on repository level. " +
+                    "By default the number of threads will be set to the number of available CPUs.",
+                    "Assumes -H/--history.").execute(threadCount ->
                     cfg.setHistoryParallelism((Integer) threadCount));
 
-            parser.on("--historyRenamedThreads", "=number", Integer.class,
-                    "The number of threads to use for history cache generation when dealing with renamed files.",
+            parser.on("--historyFileThreads", "=number", Integer.class,
+                    "The number of threads to use for history cache generation when dealing with individual files.",
                     "By default the number of threads will be set to the number of available CPUs.",
-                    "Assumes --renamedHistory=on").execute(threadCount ->
-                    cfg.setHistoryRenamedParallelism((Integer) threadCount));
+                    "Assumes -H/--history.").execute(threadCount ->
+                    cfg.setHistoryFileParallelism((Integer) threadCount));
 
             parser.on("-I", "--include", "=pattern",
                     "Only files matching this pattern will be examined. Pattern supports",
@@ -590,8 +597,7 @@ public final class Indexer {
                         cfg.setLuceneLocking(LuceneLockName.valueOf(vuc));
                     }
                 } catch (IllegalArgumentException e) {
-                    System.err.println(String.format(
-                        "`--lock %s' is invalid and ignored", v));
+                    System.err.printf("`--lock %s' is invalid and ignored%n", v);
                 }
             });
 
@@ -621,7 +627,7 @@ public final class Indexer {
                     "files), but process all other command line options.").execute(v ->
                     runIndex = false);
 
-            parser.on("--nestingMaximum", "=number",
+            parser.on("--nestingMaximum", "=number", Integer.class,
                     "Maximum depth of nested repositories. Default is 1.").execute(v ->
                     cfg.setNestingMaximum((Integer) v));
 
@@ -767,6 +773,24 @@ public final class Indexer {
                 "Default tab size to use (number of spaces per tab character).")
                     .execute(tabSize -> cfg.setTabSize((Integer) tabSize));
 
+            parser.on("--token", "=string|@file_with_string",
+                    "Authorization bearer API token to use when making API calls",
+                    "to the web application").
+                    execute(optarg -> {
+                        String value = ((String) optarg).trim();
+                        if (value.startsWith("@")) {
+                            try (BufferedReader in = new BufferedReader(new InputStreamReader(
+                                    new FileInputStream(Path.of(value).toString().substring(1))))) {
+                                String token = in.readLine().trim();
+                                cfg.setIndexerAuthenticationToken(token);
+                            } catch (IOException e) {
+                                die("Failed to read from " + value);
+                            }
+                        } else {
+                            cfg.setIndexerAuthenticationToken(value);
+                        }
+                    });
+
             parser.on("-U", "--uri", "=SCHEME://webappURI:port/contextPath",
                 "Send the current configuration to the specified web application.").execute(webAddr -> {
                     webappURI = (String) webAddr;
@@ -846,6 +870,21 @@ public final class Indexer {
 
         if (repositories.size() > 0 && !cfg.isHistoryEnabled()) {
             die("Repositories were specified; history is off however");
+        }
+
+        if (cfg.getSourceRoot() == null) {
+            die("Please specify a SRC_ROOT with option -s !");
+        }
+        if (cfg.getDataRoot() == null) {
+            die("Please specify a DATA ROOT path");
+        }
+
+        if (!new File(cfg.getSourceRoot()).canRead()) {
+            die("Source root '" + cfg.getSourceRoot() + "' must be readable");
+        }
+
+        if (!new File(cfg.getDataRoot()).canWrite()) {
+            die("Data root '" + cfg.getDataRoot() + "' must be writable");
         }
     }
 
@@ -952,14 +991,6 @@ public final class Indexer {
             List<String> subFiles,
             List<String> repositories) throws IndexerException, IOException {
 
-        if (env.getDataRootPath() == null) {
-            throw new IndexerException("ERROR: Please specify a DATA ROOT path");
-        }
-
-        if (env.getSourceRootFile() == null) {
-            throw new IndexerException("ERROR: please specify a SRC_ROOT with option -s !");
-        }
-
         if (!env.validateUniversalCtags()) {
             throw new IndexerException("Didn't find Universal Ctags");
         }
@@ -1014,12 +1045,11 @@ public final class Indexer {
                 LOGGER.log(Level.INFO, "Generating history cache for repositories: " +
                         String.join(",", repositories));
                 HistoryGuru.getInstance().createCache(repositories);
-                LOGGER.info("Done...");
             } else {
                 LOGGER.log(Level.INFO, "Generating history cache for all repositories ...");
                 HistoryGuru.getInstance().createCache();
-                LOGGER.info("Done...");
             }
+            LOGGER.info("Done...");
         }
 
         if (createDict) {
@@ -1088,22 +1118,19 @@ public final class Indexer {
             for (final IndexDatabase db : dbs) {
                 final boolean optimize = env.isOptimizeDatabase();
                 db.addIndexChangedListener(progress);
-                parallelizer.getFixedExecutor().submit(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            if (update) {
-                                db.update();
-                            } else if (optimize) {
-                                db.optimize();
-                            }
-                        } catch (Throwable e) {
-                            LOGGER.log(Level.SEVERE, "An error occurred while "
-                                    + (update ? "updating" : "optimizing")
-                                    + " index", e);
-                        } finally {
-                            latch.countDown();
+                parallelizer.getFixedExecutor().submit(() -> {
+                    try {
+                        if (update) {
+                            db.update();
+                        } else if (optimize) {
+                            db.optimize();
                         }
+                    } catch (Throwable e) {
+                        LOGGER.log(Level.SEVERE, "An error occurred while "
+                                + (update ? "updating" : "optimizing")
+                                + " index", e);
+                    } finally {
+                        latch.countDown();
                     }
                 });
             }
@@ -1207,7 +1234,7 @@ public final class Indexer {
 
     private static String getCtagsCommand() {
         Ctags ctags = CtagsUtil.newInstance(env);
-        return Executor.escapeForShell(ctags.getArgv(), true, PlatformUtils.isWindows());
+        return Executor.escapeForShell(ctags.getArgv(), true, SystemUtils.IS_OS_WINDOWS);
     }
 
     private enum HelpMode {

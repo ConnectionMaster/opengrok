@@ -18,7 +18,7 @@
 #
 
 #
-# Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2017, 2021, Oracle and/or its affiliates. All rights reserved.
 #
 
 import logging
@@ -33,7 +33,7 @@ from .exitvals import (
     FAILURE_EXITVAL
 )
 from .restful import call_rest_api
-from .patterns import PROJECT_SUBST, COMMAND_PROPERTY
+from .patterns import PROJECT_SUBST, COMMAND_PROPERTY, URL_SUBST
 import re
 
 
@@ -46,7 +46,8 @@ class CommandSequenceBase:
     """
 
     def __init__(self, name, commands, loglevel=logging.INFO, cleanup=None,
-                 driveon=False):
+                 driveon=False, url=None, env=None, http_headers=None,
+                 api_timeout=None):
         self.name = name
         self.commands = commands
         self.failed = False
@@ -58,11 +59,22 @@ class CommandSequenceBase:
         self.cleanup = cleanup
         self.loglevel = loglevel
         self.driveon = driveon
+        self.env = env
+        self.http_headers = http_headers
+        self.api_timeout = api_timeout
+
+        self.url = url
 
     def __str__(self):
         return str(self.name)
 
     def get_cmd_output(self, cmd, indent=""):
+        """
+        :param cmd: command
+        :param indent: prefix for each line
+        :return: command output as string
+        """
+
         str = ""
         for line in self.outputs.get(cmd, []):
             str += '{}{}'.format(indent, line)
@@ -81,7 +93,10 @@ class CommandSequence(CommandSequenceBase):
 
     def __init__(self, base):
         super().__init__(base.name, base.commands, loglevel=base.loglevel,
-                         cleanup=base.cleanup, driveon=base.driveon)
+                         cleanup=base.cleanup, driveon=base.driveon,
+                         url=base.url, env=base.env,
+                         http_headers=base.http_headers,
+                         api_timeout=base.api_timeout)
 
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(base.loglevel)
@@ -113,9 +128,12 @@ class CommandSequence(CommandSequenceBase):
         """
 
         for command in self.commands:
-            if is_web_uri(command.get(COMMAND_PROPERTY)[0]):
+            cmd_value = command.get(COMMAND_PROPERTY)[0]
+            if cmd_value.startswith(URL_SUBST) or is_web_uri(cmd_value):
                 try:
-                    call_rest_api(command, PROJECT_SUBST, self.name)
+                    call_rest_api(command, {PROJECT_SUBST: self.name,
+                                            URL_SUBST: self.url},
+                                  self.http_headers, self.api_timeout)
                 except HTTPError as e:
                     self.logger.error("RESTful command {} failed: {}".
                                       format(command, e))
@@ -127,8 +145,10 @@ class CommandSequence(CommandSequenceBase):
                 command_args = command.get(COMMAND_PROPERTY)
                 command = Command(command_args,
                                   env_vars=command.get("env"),
+                                  logger=self.logger,
                                   resource_limits=command.get("limits"),
-                                  args_subst={PROJECT_SUBST: self.name},
+                                  args_subst={PROJECT_SUBST: self.name,
+                                              URL_SUBST: self.url},
                                   args_append=[self.name], excl_subst=True)
                 retcode = self.run_command(command)
 
@@ -166,9 +186,12 @@ class CommandSequence(CommandSequenceBase):
             return
 
         for cleanup_cmd in self.cleanup:
-            if is_web_uri(cleanup_cmd.get(COMMAND_PROPERTY)[0]):
+            arg0 = cleanup_cmd.get(COMMAND_PROPERTY)[0]
+            if arg0.startswith(URL_SUBST) or is_web_uri(arg0):
                 try:
-                    call_rest_api(cleanup_cmd, PROJECT_SUBST, self.name)
+                    call_rest_api(cleanup_cmd, {PROJECT_SUBST: self.name,
+                                                URL_SUBST: self.url},
+                                  self.http_headers, self.api_timeout)
                 except HTTPError as e:
                     self.logger.error("RESTful command {} failed: {}".
                                       format(cleanup_cmd, e))
@@ -177,7 +200,9 @@ class CommandSequence(CommandSequenceBase):
                 self.logger.debug("Running cleanup command '{}'".
                                   format(command_args))
                 cmd = Command(command_args,
-                              args_subst={PROJECT_SUBST: self.name},
+                              logger=self.logger,
+                              args_subst={PROJECT_SUBST: self.name,
+                                          URL_SUBST: self.url},
                               args_append=[self.name], excl_subst=True)
                 cmd.execute()
                 if cmd.getretcode() != SUCCESS_EXITVAL:
@@ -186,21 +211,32 @@ class CommandSequence(CommandSequenceBase):
                                       format(cmd.cmd, cmd.getretcode()))
                     self.logger.info('output: {}'.format(cmd.getoutputstr()))
 
+    def print_outputs(self, logger, loglevel=logging.INFO, lines=False):
+        """
+        Print command outputs.
+        """
+
+        logger.debug("Output for project '{}':".format(self.name))
+        for cmd in self.outputs.keys():
+            if self.outputs[cmd] and len(self.outputs[cmd]) > 0:
+                if lines:
+                    logger.log(loglevel, "Output from '{}':".format(cmd))
+                    logger.log(loglevel, '{}'.format(self.get_cmd_output(cmd)))
+                else:
+                    logger.log(loglevel, "'{}': {}".
+                               format(cmd, self.outputs[cmd]))
+
     def check(self, ignore_errors):
         """
         Check the output of the commands and perform logging.
 
-        Return 0 on success, 1 if error was detected.
+        Return SUCCESS_EXITVAL on success, 1 if error was detected.
         """
 
         ret = SUCCESS_EXITVAL
-        self.logger.debug("Output for project '{}':".format(self.name))
-        for cmd in self.outputs.keys():
-            if self.outputs[cmd] and len(self.outputs[cmd]) > 0:
-                self.logger.debug("'{}': {}".
-                                  format(cmd, self.outputs[cmd]))
+        self.print_outputs(self.logger, loglevel=logging.DEBUG)
 
-        if self.name in ignore_errors:
+        if ignore_errors and self.name in ignore_errors:
             self.logger.debug("errors of project '{}' ignored".
                               format(self.name))
             return

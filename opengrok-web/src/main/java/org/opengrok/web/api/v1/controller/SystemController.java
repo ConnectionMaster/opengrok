@@ -18,25 +18,31 @@
  */
 
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021, Oracle and/or its affiliates. All rights reserved.
  */
 package org.opengrok.web.api.v1.controller;
-
+import jakarta.inject.Inject;
+import jakarta.validation.Valid;
+import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.PUT;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.MediaType;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.util.StdDateFormat;
+import org.opengrok.indexer.configuration.IndexTimestamp;
 import org.opengrok.indexer.configuration.RuntimeEnvironment;
 import org.opengrok.indexer.web.EftarFile;
 import org.opengrok.indexer.logger.LoggerFactory;
 import org.opengrok.indexer.web.PathDescription;
 import org.opengrok.web.api.v1.suggester.provider.service.SuggesterService;
 
-import javax.inject.Inject;
-import javax.validation.Valid;
-import javax.ws.rs.Consumes;
-import javax.ws.rs.POST;
-import javax.ws.rs.PUT;
-import javax.ws.rs.Path;
-import javax.ws.rs.core.MediaType;
 import java.io.IOException;
 import java.util.Collections;
+import java.util.Date;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
@@ -73,5 +79,16 @@ public class SystemController {
         EftarFile ef = new EftarFile();
         ef.create(Set.of(descriptions), env.getDtagsEftarPath().toString());
         LOGGER.log(Level.INFO, "reloaded path descriptions with {0} entries", descriptions.length);
+    }
+
+    @GET
+    @Path("/indextime")
+    @Produces(MediaType.APPLICATION_JSON)
+    public String getIndexTime() throws JsonProcessingException {
+        Date date = new IndexTimestamp().getDateForLastIndexRun();
+        ObjectMapper mapper = new ObjectMapper();
+        // StdDateFormat is ISO8601 since jackson 2.9
+        mapper.setDateFormat(new StdDateFormat().withColonInTimeZone(true));
+        return mapper.writeValueAsString(date);
     }
 }
